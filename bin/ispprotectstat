@@ -1,0 +1,303 @@
+#!/usr/bin/env raku
+
+use ISP::Server::Reporter;
+
+constant \KILO  = 1000;
+constant \MEGA  = KILO  * 1000;
+constant \GIGA  = MEGA  * 1000;
+constant \TERA  = GIGA  * 1000;
+constant \PETA  = TERA  * 1000;
+
+my @SUB-DIGITS;
+@SUB-DIGITS[0]    = "\x[2080]";
+@SUB-DIGITS[1]    = "\x[2081]";
+@SUB-DIGITS[2]    = "\x[2082]";
+@SUB-DIGITS[3]    = "\x[2083]";
+@SUB-DIGITS[4]    = "\x[2084]";
+@SUB-DIGITS[5]    = "\x[2085]";
+@SUB-DIGITS[6]    = "\x[2086]";
+@SUB-DIGITS[7]    = "\x[2087]";
+@SUB-DIGITS[8]    = "\x[2088]";
+@SUB-DIGITS[9]    = "\x[2089]";
+
+my @SUPER-DIGITS;
+@SUPER-DIGITS[0]    = "\x[2070]";
+@SUPER-DIGITS[1]    = "\x[00B9]";
+@SUPER-DIGITS[2]    = "\x[00B2]";
+@SUPER-DIGITS[3]    = "\x[00B3]";
+@SUPER-DIGITS[4]    = "\x[2074]";
+@SUPER-DIGITS[5]    = "\x[2075]";
+@SUPER-DIGITS[6]    = "\x[2076]";
+@SUPER-DIGITS[7]    = "\x[2077]";
+@SUPER-DIGITS[8]    = "\x[2078]";
+@SUPER-DIGITS[9]    = "\x[2079]";
+
+sub int-to-superscript (Int:D $i) {
+    my $accumulator = '';
+    for $i.Int.comb -> $c {
+        $accumulator ~= @SUPER-DIGITS[$c.Int];
+    }
+    return $accumulator;
+}
+
+sub int-to-subscript (Int:D $i) {
+    my $accumulator = '';
+    for $i.Int.comb -> $c {
+        $accumulator ~= @SUB-DIGITS[$c.Int];
+    }
+    return $accumulator;
+}
+
+sub num-with-comma (Int:D $i is copy) {
+    return $i.Str.flip.comb(3).join(',').flip if $i >= 0;
+    $i *= -1;
+    return '-' ~ $i.Str.flip.comb(3).join(',').flip;
+}
+
+sub num-to-metric (Int:D $num) {
+    given $num {
+        when $_ >= PETA { return ($num / PETA).fmt("%.1f P"); }
+        when $_ >= TERA { return ($num / TERA).fmt("%.1f T"); }
+        when $_ >= GIGA { return ($num / GIGA).fmt("%.1f G"); }
+        when $_ >= MEGA { return ($num / MEGA).fmt("%.1f M"); }
+        when $_ >= KILO { return ($num / KILO).fmt("%.1f K"); }
+        default         { return $num                         }
+    }
+}
+
+class ISP-Replnode-statistics {
+
+    has Int $!source-objs               = 0;
+    has Int $.source-objs-delta         = 0;
+    has Int $!last-source-objs          = -1;
+
+    method source-objs (Int :$source-objs) {
+        return $!source-objs            without $source-objs;
+        $!last-source-objs              = $source-objs unless $!last-source-objs >= 0;
+        $!source-objs-delta             = $source-objs - $!last-source-objs;
+        $!source-objs                   = $source-objs;
+        $!last-source-objs              = $source-objs;
+    }
+
+    has Int $!target-objs               = 0;
+    has Int $.target-objs-delta         = 0;
+    has Int $!last-target-objs          = -1;
+
+    method target-objs (Int :$target-objs) {
+        return $!target-objs            without $target-objs;
+        $!last-target-objs              = $target-objs unless $!last-target-objs >= 0;
+        $!target-objs-delta             = $target-objs - $!last-target-objs;
+        $!target-objs                   = $target-objs;
+        $!last-target-objs              = $target-objs;
+    }
+
+    has Int $!pending-objs              = 0;
+    has Int $.pending-objs-delta        = 0;
+    has Int $!last-pending-objs         = -1;
+
+    method pending-objs () {
+        $!pending-objs                  = (self.source-objs - self.target-objs);
+        $!last-pending-objs             = $!pending-objs unless $!last-pending-objs >= 0;
+        $!pending-objs-delta            = $!pending-objs - $!last-pending-objs;
+        $!last-pending-objs             = $!pending-objs;
+        return $!pending-objs
+    }
+}
+
+#mdevine@L-707970:~> lc02 -datao=y -displaymode=list "select * from processes"
+#     PROCESS_NUM: 1243
+#         PROCESS: Protect Stgpool
+#      START_TIME: 2023-03-03 07:55:16.000000
+# FILES_PROCESSED: 142343755
+# BYTES_PROCESSED: 1070827771688
+#BYTES_TO_PROCESS: 1261994882181
+#           JOBID: 
+#          STATUS: Protecting storage pool EVAULT_DC on server ISPLC02 to EVAULT_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 142343755 of 146455717. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 997 GB of 1,175 GB. Amount failed: 0 bytes. Amount 
+#                   transferred: 997 GB. Elapsed time: 0 Days, 4 Hours, 25 Minutes.\
+#
+#  PROCESS_PARENT: 
+#
+#     PROCESS_NUM: 1244
+#         PROCESS: Protect Stgpool
+#      START_TIME: 2023-03-03 08:27:44.000000
+# FILES_PROCESSED: 98470748
+# BYTES_PROCESSED: 2020500870472
+#BYTES_TO_PROCESS: 2523199142121
+#           JOBID: 
+#          STATUS: Protecting storage pool NFS_DC on server ISPLC02 to NFS_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 98470748 of 102529096. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 1,881 GB of 2,349 GB. Amount failed: 0 bytes. Amount transferred: 
+#                   1,886 GB. Elapsed time: 0 Days, 3 Hours, 52 Minutes.\
+
+class Reporter does ISP::Server::Reporter {
+
+    has %!statistics;
+    has $!accumulated-total-t-delta     = 0;
+
+    method process-rows (@replnodes) {
+        my Str $node-name;                                  #                            Node Name: P_SSSSSS
+        my Str $type;                                       #                                 Type: Bkup
+        my Str $filespace;                                  #                       Filespace Name: /nfsmounts/P_SSSSSS
+        my Str $fsid;                                       #                                 FSID: 1
+        my Int $source-objs;                                # Objects on Source Replication Server: 440
+        my Int $target-objs;                                # Objects on Target Replication Server: 436
+        my Str $target-server;                              #            Target Replication Server: IIIIIIII05
+
+        my $total-source-objs           = 0;
+        my $total-source-objs-delta     = 0;
+        my $total-target-objs           = 0;
+        my $total-target-objs-delta     = 0;
+        my $total-pending-objs          = 0;
+
+        my $row;
+        for @replnodes -> $replnode {
+            $node-name                  = '';   $node-name      = $replnode{'Node Name'}.Str                                                    if $replnode{'Node Name'};
+            $type                       = '';   $type           = $replnode{'Type'}.Str                                                         if $replnode{'Type'};
+            $filespace                  = '';   $filespace      = $replnode{'Filespace Name'}.Str                                               if $replnode{'Filespace Name'};
+            $fsid                       = '';   $fsid           = $replnode{'FSID'}.Str                                                         if $replnode{'FSID'};
+            $source-objs                = 0;    $source-objs    = $replnode{'Objects on Source Replication Server'}.comb.grep(/\d/).join.Int    if $replnode{'Objects on Source Replication Server'};
+            $target-objs                = 0;    $target-objs    = $replnode{'Objects on Target Replication Server'}.comb.grep(/\d/).join.Int    if $replnode{'Objects on Target Replication Server'};
+            $target-server              = '';   $target-server  = $replnode{'Target Replication Server'}.Str                                    if $replnode{'Target Replication Server'};
+
+            %!statistics{$node-name}{$fsid}{$type}              = ISP-Replnode-statistics.new   unless %!statistics{$node-name}{$fsid}{$type}:exists;
+
+            %!statistics{$node-name}{$fsid}{$type}.source-objs(:$source-objs);
+            %!statistics{$node-name}{$fsid}{$type}.target-objs(:$target-objs);
+
+            $total-source-objs         += $source-objs;
+            $total-source-objs-delta   += %!statistics{$node-name}{$fsid}{$type}.source-objs-delta;
+
+            $total-target-objs         += $target-objs;
+            $total-target-objs-delta   += %!statistics{$node-name}{$fsid}{$type}.target-objs-delta;
+
+            my $pending-objs            = %!statistics{$node-name}{$fsid}{$type}.pending-objs;
+            $total-pending-objs        += $pending-objs;
+
+            $row                        = Array.new;
+            $row.push:                  $node-name;
+            $row.push:                  $type;
+            $row.push:                  $filespace ?? $filespace ~ int-to-superscript($fsid.Int) !! ' ';
+            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.source-objs);
+            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.source-objs-delta);
+            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.target-objs);
+            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.target-objs-delta);
+            $row.push:                  num-with-comma($pending-objs);
+            
+            my Rat $pct-complete        = 100.0;
+            if $source-objs > 0 {
+                $pct-complete           = ($target-objs / $source-objs) * 100;
+                $pct-complete           = 99.9 if 99.9 < $pct-complete < 100.0;
+            }
+            $row.push:                  $pct-complete.fmt("%.1f%%");
+            $row.push:                  $target-server;
+            self.table.add-row:         $row;
+        }
+        $!accumulated-total-t-delta    += $total-target-objs-delta;
+
+        $row                            = [ '~', ' ', ' ', '-------', '-------', '-------', '-------', '-------', '-------', '---------------', ];
+        self.table.add-row:             $row;
+        $row                            = [ "~ TOTALS", ' ', ' ', ];
+        $row.push:                      num-to-metric($total-source-objs);
+        $row.push:                      num-to-metric($total-source-objs-delta);
+        $row.push:                      num-to-metric($total-target-objs);
+        $row.push:                      num-to-metric($total-target-objs-delta);
+        $row.push:                      num-to-metric($total-pending-objs);
+        my Rat $pct-complete            = ($total-target-objs / $total-source-objs) * 100;
+        if 99.9 < $pct-complete < 100.0 {
+            $pct-complete               = 99.9;
+        }
+        $row.push:                      $pct-complete.fmt("%.1f%%");
+        my $atd-rate                    = (($!accumulated-total-t-delta / (now - self.first-iteration)).Int * 60);
+        $atd-rate                       = 1.0 if 0.0 < $atd-rate < 1.0;
+        $row.push:                      sprintf("%s obj/min", num-to-metric($atd-rate.Int));
+        self.table.add-row:             $row;
+    }
+}
+
+#"select NODE_NAME,START_TIME,FSNAME,FSID,PROC_ID,TOTFILES_TO_REPLICATE,TOTFILES_REPLICATED,TOTBYTES_TO_REPLICATE,TOTBYTES_REPLICATED,BKSERVER from REPLICATIONVIEW where NODE_NAME in (select NODE_NAME from NODES where NODEGROUP='DFS')"
+#            NODE_NAME: DFS2K16-14
+#           START_TIME: 2023-02-28 08:21:57.000000
+#               FSNAME: \\dfs2k16-14\c$\data\fs10
+#                 FSID: 2
+#              PROC_ID: 1180
+#TOTFILES_TO_REPLICATE: 3811271
+#  TOTFILES_REPLICATED: 3811271
+#TOTBYTES_TO_REPLICATE: 940329062584
+#  TOTBYTES_REPLICATED: 940329062584
+#             BKSERVER: ISPLC01
+#
+#            NODE_NAME: DFS2K16-17
+#           START_TIME: 2023-02-28 17:00:48.000000
+#               FSNAME: \\dfs2k16-17\g$
+#                 FSID: 4
+#              PROC_ID: 1188
+#TOTFILES_TO_REPLICATE: 154619
+#  TOTFILES_REPLICATED: 74492
+#TOTBYTES_TO_REPLICATE: 965132679688
+#  TOTBYTES_REPLICATED: 275247425006
+#             BKSERVER: ISPLC01
+
+#"select NODE_NAME,START_TIME,FSNAME,FSID,PROC_ID,TOTFILES_TO_REPLICATE,TOTFILES_REPLICATED,TOTBYTES_TO_REPLICATE,TOTBYTES_REPLICATED,BKSERVER from REPLICATIONVIEW where STATE='RUNNING'"
+#            NODE_NAME: DFS2K16-15
+#           START_TIME: 2023-02-28 12:23:31.000000
+#               FSNAME: \\dfs2k16-15\c$\data\fs15
+#                 FSID: 4
+#              PROC_ID: 1184
+#TOTFILES_TO_REPLICATE: 1064390
+#  TOTFILES_REPLICATED: 786166
+#TOTBYTES_TO_REPLICATE: 3860938584793
+#  TOTBYTES_REPLICATED: 1959312768620
+#             BKSERVER: ISPLC01
+#
+#            NODE_NAME: DFS2K16-15
+#           START_TIME: 2023-02-28 12:23:31.000000
+#               FSNAME: \\dfs2k16-15\c$\data\fs151
+#                 FSID: 5
+#              PROC_ID: 1184
+#TOTFILES_TO_REPLICATE: 1281422
+#  TOTFILES_REPLICATED: 1227044
+#TOTBYTES_TO_REPLICATE: 1692333539470
+#  TOTBYTES_REPLICATED: 1478381486808
+#             BKSERVER: ISPLC01
+
+sub MAIN (
+    Str:D   :$isp-server!,                          #= ISP server name
+    Str:D   :$isp-admin!,                           #= ISP server name
+    Int:D   :$interval      where * >= 5    = 58,   #= Refresh every --interval seconds (minimum 10s)
+    Int:D   :$count                         = 1,    #= Number of refreshes (0 is infinity)
+    Bool    :$grid,                                 #= Full table grid
+    Bool    :$clear,                                #= Clear the screen with each iteration
+    Str     :$node,                                 #= ISP NODE name or NODEGROUP
+) {
+    my @command         = ['QUERY', 'REPLNODE'];
+    if $node {
+        @command.push: $node;
+    }
+    else {
+        @command.push: '*';
+    }
+    my @fields;
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Node Name'),        :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Type'),             :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Filespace Name'),   :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source Objs'),      :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source Δ'),       :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Objs'),      :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Δ'),       :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Pending Objs'),     :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Completed'),        :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Server'),    :alignment('l'));
+    my $reporter    = Reporter.new(
+                                    :$isp-server,
+                                    :$isp-admin,
+                                    :$count,
+                                    :$grid,
+                                    :$clear,
+                                    :$interval,
+                                    :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Node Replication'),
+                                    :@command,
+                                    :@fields,
+                                    :sort-by('Node Name'),
+                                  );
+    $reporter.loop;
+}
+
+=finish
