@@ -185,7 +185,7 @@ my regex status-regex    {
                                 ' of '
                                 .+?
                                 '. Amount failed: '
-                                $<amount-failed>            = (.+?)
+                                .+?
                                 '. Amount transferred: '
                                 $<amount-transferred>       = (.+?)
                                 '. Elapsed time: '
@@ -202,11 +202,11 @@ class Reporter does ISP::Server::Reporter {
         my DateTime $START_TIME;                            #      START_TIME: 2023-03-03 08:27:44.000000
         my Int      $BYTES_PROCESSED;                       # BYTES_PROCESSED: 2020500870472
         my Str      $storage-pool;                          # regex
-        my Str      $source-server;                         # regex
-        my Str      $target-server;                         # regex
+        my Str      $source;                                # regex
+        my Str      $target;                                # regex
         my Str      $phase;                                 # regex
-        my Int      $amount-failed;                         # regex
-        my Int      $amount-transferred;                    # regex
+        my Str      $elapsed-time;                          # regex
+        my Int      $transferred;                           # regex
 
         my $row;
         for @processes -> $process {
@@ -215,6 +215,7 @@ class Reporter does ISP::Server::Reporter {
             next                        unless  $PROCESS eq 'Protect Stgpool';
             $PROCESS_NUM                = 0;    $PROCESS_NUM        = $process{'PROCESS_NUM'}.Str       if $process{'PROCESS_NUM'};
             $START_TIME                 = Nil;
+            $elapsed-time               = '';
             if $process{'START_TIME'} && $process{'START_TIME'} ~~ /<date-time-regex>/ {
                 $START_TIME     = DateTime.new(
                                                     :month($<date-time-regex><month>),
@@ -224,31 +225,19 @@ class Reporter does ISP::Server::Reporter {
                                                     :minute($<date-time-regex><minute>),
                                                     :second($<date-time-regex><second>),
                                                 );
-                my $current-dt  = DateTime.new(now, :timezone(self.seconds-offset-UTC));
-%%%%            $active         = seconds-to-d-hh-mm-ss(($current-dt.local - $START_TIME).Int);
+                $elapsed-time   = seconds-to-d-hh-mm-ss((DateTime.new(now, :timezone(self.seconds-offset-UTC)).local - $START_TIME).Int);
             }
-            $BYTES_PROCESSED            = 0;    $BYTES_PROCESSED    = $process{'PROCESS_NUM'}.Str       if $process{'PROCESS_NUM'};
+            $BYTES_PROCESSED            = 0;    $BYTES_PROCESSED    = $process{'PROCESS_NUM'}.Int       if $process{'PROCESS_NUM'};
             if  $process{'STATUS'} ~~ /<status-regex>/ {
-%%%
+                $source                 = $<status-regex><source-stgpool-name> ~ '@' ~ $<status-regex><source-server>;
+                $target                 = $<status-regex><target-stgpool-name> ~ '@' ~ $<status-regex><target-server>;
+                $phase                  = $<status-regex><phase>;
+                $transferred            = $<status-regex><amount-transferred>;
             }
             else {
                 die 'Parse of STATUS failed!';
             }
-
-            $network-transfer   = 0';   $filespace      = $process{'Filespace Name'}.Str                                               if $process{'Filespace Name'};
-            $fsid                       = '';   $fsid           = $process{'FSID'}.Str                                                         if $process{'FSID'};
-            $source-server              = '';   $source-server  = $process{'Target Replication Server'}.Str                                    if $process{'Target Replication Server'};
-            $target-server              = '';   $target-server  = $process{'Target Replication Server'}.Str                                    if $process{'Target Replication Server'};
-
-
-
-
             $row                        = Array.new;
-
-
-
-
-
             $row.push:                  $node-name;
             $row.push:                  $type;
             $row.push:                  $filespace ?? $filespace ~ int-to-superscript($fsid.Int) !! ' ';
@@ -267,25 +256,12 @@ class Reporter does ISP::Server::Reporter {
             $row.push:                  $target-server;
             self.table.add-row:         $row;
         }
-        $!accumulated-total-t-delta    += $total-target-objs-delta;
 
-        $row                            = [ '~', ' ', ' ', '-------', '-------', '-------', '-------', '-------', '-------', '---------------', ];
-        self.table.add-row:             $row;
-        $row                            = [ "~ TOTALS", ' ', ' ', ];
-        $row.push:                      num-to-metric($total-source-objs);
-        $row.push:                      num-to-metric($total-source-objs-delta);
-        $row.push:                      num-to-metric($total-target-objs);
-        $row.push:                      num-to-metric($total-target-objs-delta);
-        $row.push:                      num-to-metric($total-pending-objs);
-        my Rat $pct-complete            = ($total-target-objs / $total-source-objs) * 100;
-        if 99.9 < $pct-complete < 100.0 {
-            $pct-complete               = 99.9;
-        }
-        $row.push:                      $pct-complete.fmt("%.1f%%");
-        my $atd-rate                    = (($!accumulated-total-t-delta / (now - self.first-iteration)).Int * 60);
-        $atd-rate                       = 1.0 if 0.0 < $atd-rate < 1.0;
-        $row.push:                      sprintf("%s obj/min", num-to-metric($atd-rate.Int));
-        self.table.add-row:             $row;
+#       my Rat $pct-complete            = ($total-target-objs / $total-source-objs) * 100;
+#       if 99.9 < $pct-complete < 100.0 {
+#           $pct-complete               = 99.9;
+#       }
+#       $row.push:                      $pct-complete.fmt("%.1f%%");
     }
 }
 
@@ -310,17 +286,18 @@ sub MAIN (
     }
 
     my @command         = ['SELECT', '*', 'FROM', 'PROCESSES', 'WHERE', "PROCESS='Protect Stgpool'"];
+
+#   Source          Target          Phase       Elapsed Time            Processed       Transferred     Completed   #%%%   Deleted Failed
+#   EVAULT@ISPLC02  EVAULT@ISPLC01  PROTECTING  [hh:mm:ss]**<procid>    1,987 G         1,800 G         54%         #%%%   0       0
+
     my @fields;
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Storage Pool'), :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Elapsed'),      :alignment('r'));
     @fields.push:   ISP::Server::Reporter::Field.new(:name('Source'),       :alignment('r'));
     @fields.push:   ISP::Server::Reporter::Field.new(:name('Target'),       :alignment('r'));
     @fields.push:   ISP::Server::Reporter::Field.new(:name('Phase'),        :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Elapsed Time'), :alignment('r'));
     @fields.push:   ISP::Server::Reporter::Field.new(:name('Processed'),    :alignment('r'));
     @fields.push:   ISP::Server::Reporter::Field.new(:name('Transferred'),  :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Complete'),     :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Deletions'),    :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Failures'),     :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Completed'),    :alignment('r'));
     my $reporter    = Reporter.new(
                                     :$isp-server,
                                     :$isp-admin,
@@ -331,7 +308,7 @@ sub MAIN (
                                     :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Protect Storage Pool'),
                                     :@command,
                                     :@fields,
-                                    :sort-by('Storage Pool'),
+                                    :sort-by('Source'),
                                   );
     $reporter.loop;
 }
