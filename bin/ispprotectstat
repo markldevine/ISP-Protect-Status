@@ -1,12 +1,17 @@
 #!/usr/bin/env raku
 
 use ISP::Server::Reporter;
+use ISP::dsmadmc;
 
-constant \KILO  = 1000;
-constant \MEGA  = KILO  * 1000;
-constant \GIGA  = MEGA  * 1000;
-constant \TERA  = GIGA  * 1000;
-constant \PETA  = TERA  * 1000;
+constant \MINUTE    = 60;
+constant \HOUR      = MINUTE    * 60;
+constant \DAY       = HOUR      * 24;
+
+constant \KILO  = 1024;         # bytes
+constant \MEGA  = KILO  * KILO;
+constant \GIGA  = MEGA  * KILO;
+constant \TERA  = GIGA  * KILO;
+constant \PETA  = TERA  * KILO;
 
 my @SUB-DIGITS;
 @SUB-DIGITS[0]    = "\x[2080]";
@@ -65,46 +70,72 @@ sub num-to-metric (Int:D $num) {
     }
 }
 
-class ISP-Replnode-statistics {
-
-    has Int $!source-objs               = 0;
-    has Int $.source-objs-delta         = 0;
-    has Int $!last-source-objs          = -1;
-
-    method source-objs (Int :$source-objs) {
-        return $!source-objs            without $source-objs;
-        $!last-source-objs              = $source-objs unless $!last-source-objs >= 0;
-        $!source-objs-delta             = $source-objs - $!last-source-objs;
-        $!source-objs                   = $source-objs;
-        $!last-source-objs              = $source-objs;
+sub to-bytes (Str:D $num-unit) {
+    if $num-unit ~~ / ^ (\d+ '.'* \d*) \s* (\w*) $ / {
+        my $actual  = $0.Str.comb.grep(/ \d | '.' /).join;
+        my $unit    = $1.Str with $1;
+        given $unit {
+            when 'K'    { return $actual * KILO }
+            when 'M'    { return $actual * MEGA }
+            when 'G'    { return $actual * GIGA }
+            when 'T'    { return $actual * TERA }
+            when 'P'    { return $actual * PETA }
+            default     { return $actual;       }
+        }
     }
-
-    has Int $!target-objs               = 0;
-    has Int $.target-objs-delta         = 0;
-    has Int $!last-target-objs          = -1;
-
-    method target-objs (Int :$target-objs) {
-        return $!target-objs            without $target-objs;
-        $!last-target-objs              = $target-objs unless $!last-target-objs >= 0;
-        $!target-objs-delta             = $target-objs - $!last-target-objs;
-        $!target-objs                   = $target-objs;
-        $!last-target-objs              = $target-objs;
-    }
-
-    has Int $!pending-objs              = 0;
-    has Int $.pending-objs-delta        = 0;
-    has Int $!last-pending-objs         = -1;
-
-    method pending-objs () {
-        $!pending-objs                  = (self.source-objs - self.target-objs);
-        $!last-pending-objs             = $!pending-objs unless $!last-pending-objs >= 0;
-        $!pending-objs-delta            = $!pending-objs - $!last-pending-objs;
-        $!last-pending-objs             = $!pending-objs;
-        return $!pending-objs
-    }
+    return $num-unit;
 }
 
-#mdevine@L-707970:~> lc02 -datao=y -displaymode=list "select * from processes"
+sub seconds-to-d-hh-mm-ss (Int:D $total-seconds) {
+    my $dhms        = 'hh:mm:ss';
+    my $days        = 0;
+    my $hours       = 0;
+    my $minutes     = 0;
+    my $seconds     = $total-seconds;
+    my $result;
+    if $seconds >= DAY {
+        $days       = ($seconds / DAY).Int;
+        $result     = $days ~ 'd ';
+        $seconds   -= $days * DAY;
+    }
+    if $seconds >= HOUR {
+        $hours      = ($seconds / HOUR).Int;
+        $result    ~= $hours.fmt("%02d");
+        $seconds   -= $hours * HOUR;
+    }
+    else {
+        $result    ~= '00';
+    }
+    if $seconds >= MINUTE {
+        $minutes    = ($seconds / MINUTE).Int;
+        $result    ~= ':' ~ $minutes.fmt("%02d") ~ ':';
+        $seconds   -= $minutes * MINUTE;
+    }
+    else {
+        $result    ~= ':00:';
+    }
+    $seconds        = 0 if $seconds < 0;
+    $result        ~= $seconds.fmt("%02d");
+    return $result;
+}
+
+my regex date-time-regex    {
+                                ^
+                                $<month>        = (\d\d)
+                                '/'
+                                $<day-of-month> = (\d\d)
+                                '/'
+                                $<year>         = (\d+)
+                                \s+
+                                $<hour>         = (\d\d)
+                                ':'
+                                $<minute>       = (\d\d)
+                                ':'
+                                $<second>       = (\d\d)
+                                $
+                            }
+
+#"select * from processes"
 #     PROCESS_NUM: 1243
 #         PROCESS: Protect Stgpool
 #      START_TIME: 2023-03-03 07:55:16.000000
@@ -114,7 +145,6 @@ class ISP-Replnode-statistics {
 #           JOBID: 
 #          STATUS: Protecting storage pool EVAULT_DC on server ISPLC02 to EVAULT_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 142343755 of 146455717. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 997 GB of 1,175 GB. Amount failed: 0 bytes. Amount 
 #                   transferred: 997 GB. Elapsed time: 0 Days, 4 Hours, 25 Minutes.\
-#
 #  PROCESS_PARENT: 
 #
 #     PROCESS_NUM: 1244
@@ -126,52 +156,99 @@ class ISP-Replnode-statistics {
 #           JOBID: 
 #          STATUS: Protecting storage pool NFS_DC on server ISPLC02 to NFS_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 98470748 of 102529096. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 1,881 GB of 2,349 GB. Amount failed: 0 bytes. Amount transferred: 
 #                   1,886 GB. Elapsed time: 0 Days, 3 Hours, 52 Minutes.\
+#  PROCESS_PARENT: 
+
+my regex status-regex    {
+                                ^
+                                'Protecting storage pool '
+                                $<source-stgpool-name>      = (.+?)
+                                ' on server '
+                                $<source-server>            = (.+?)
+                                ' to '
+                                $<target-stgpool-name>      = (.+?)
+                                ' on server '
+                                $<target-server>            = (.+?)
+                                '. Protect process phase: '
+                                $<phase>                    = (.+?)
+                                '. Extents protected: '
+                                \d+
+                                ' of '
+                                \d+
+                                '. Extents failed to protect: '
+                                \d+
+                                '. Extents deleted: '
+                                \d+
+                                ' of '
+                                \d+
+                                '. Amount protected: '
+                                .+?
+                                ' of '
+                                .+?
+                                '. Amount failed: '
+                                $<amount-failed>            = (.+?)
+                                '. Amount transferred: '
+                                $<amount-transferred>       = (.+?)
+                                '. Elapsed time: '
+                         }
+
+#   Source          Target          Phase       Elapsed Time            Processed       Transferred     Completed   #%%%   Deleted Failed
+#   EVAULT@ISPLC02  EVAULT@ISPLC01  PROTECTING  [hh:mm:ss]**<procid>    1,987 G         1,800 G         54%         #%%%   0       0
 
 class Reporter does ISP::Server::Reporter {
 
-    has %!statistics;
-    has $!accumulated-total-t-delta     = 0;
-
-    method process-rows (@replnodes) {
-        my Str $node-name;                                  #                            Node Name: P_SSSSSS
-        my Str $type;                                       #                                 Type: Bkup
-        my Str $filespace;                                  #                       Filespace Name: /nfsmounts/P_SSSSSS
-        my Str $fsid;                                       #                                 FSID: 1
-        my Int $source-objs;                                # Objects on Source Replication Server: 440
-        my Int $target-objs;                                # Objects on Target Replication Server: 436
-        my Str $target-server;                              #            Target Replication Server: IIIIIIII05
-
-        my $total-source-objs           = 0;
-        my $total-source-objs-delta     = 0;
-        my $total-target-objs           = 0;
-        my $total-target-objs-delta     = 0;
-        my $total-pending-objs          = 0;
+    method process-rows (@processes) {
+        my Int      $PROCESS_NUM;                           #     PROCESS_NUM: 1244
+        my Str      $PROCESS;                               #         PROCESS: Protect Stgpool
+        my DateTime $START_TIME;                            #      START_TIME: 2023-03-03 08:27:44.000000
+        my Int      $BYTES_PROCESSED;                       # BYTES_PROCESSED: 2020500870472
+        my Str      $storage-pool;                          # regex
+        my Str      $source-server;                         # regex
+        my Str      $target-server;                         # regex
+        my Str      $phase;                                 # regex
+        my Int      $amount-failed;                         # regex
+        my Int      $amount-transferred;                    # regex
 
         my $row;
-        for @replnodes -> $replnode {
-            $node-name                  = '';   $node-name      = $replnode{'Node Name'}.Str                                                    if $replnode{'Node Name'};
-            $type                       = '';   $type           = $replnode{'Type'}.Str                                                         if $replnode{'Type'};
-            $filespace                  = '';   $filespace      = $replnode{'Filespace Name'}.Str                                               if $replnode{'Filespace Name'};
-            $fsid                       = '';   $fsid           = $replnode{'FSID'}.Str                                                         if $replnode{'FSID'};
-            $source-objs                = 0;    $source-objs    = $replnode{'Objects on Source Replication Server'}.comb.grep(/\d/).join.Int    if $replnode{'Objects on Source Replication Server'};
-            $target-objs                = 0;    $target-objs    = $replnode{'Objects on Target Replication Server'}.comb.grep(/\d/).join.Int    if $replnode{'Objects on Target Replication Server'};
-            $target-server              = '';   $target-server  = $replnode{'Target Replication Server'}.Str                                    if $replnode{'Target Replication Server'};
+        for @processes -> $process {
+            next                        unless $process{'PROCESS'}:exists;
+            $PROCESS                    = '';   $PROCESS            = $process{'PROCESS'}.Str;          if $process{'PROCESS'};
+            next                        unless  $PROCESS eq 'Protect Stgpool';
+            $PROCESS_NUM                = 0;    $PROCESS_NUM        = $process{'PROCESS_NUM'}.Str       if $process{'PROCESS_NUM'};
+            $START_TIME                 = Nil;
+            if $process{'START_TIME'} && $process{'START_TIME'} ~~ /<date-time-regex>/ {
+                $START_TIME     = DateTime.new(
+                                                    :month($<date-time-regex><month>),
+                                                    :day($<date-time-regex><day-of-month>),
+                                                    :year($<date-time-regex><year> < 100 ?? +$<date-time-regex><year> + 2000 !! +$<date-time-regex><year>),
+                                                    :hour($<date-time-regex><hour>),
+                                                    :minute($<date-time-regex><minute>),
+                                                    :second($<date-time-regex><second>),
+                                                );
+                my $current-dt  = DateTime.new(now, :timezone(self.seconds-offset-UTC));
+%%%%            $active         = seconds-to-d-hh-mm-ss(($current-dt.local - $START_TIME).Int);
+            }
+            $BYTES_PROCESSED            = 0;    $BYTES_PROCESSED    = $process{'PROCESS_NUM'}.Str       if $process{'PROCESS_NUM'};
+            if  $process{'STATUS'} ~~ /<status-regex>/ {
+%%%
+            }
+            else {
+                die 'Parse of STATUS failed!';
+            }
 
-            %!statistics{$node-name}{$fsid}{$type}              = ISP-Replnode-statistics.new   unless %!statistics{$node-name}{$fsid}{$type}:exists;
+            $network-transfer   = 0';   $filespace      = $process{'Filespace Name'}.Str                                               if $process{'Filespace Name'};
+            $fsid                       = '';   $fsid           = $process{'FSID'}.Str                                                         if $process{'FSID'};
+            $source-server              = '';   $source-server  = $process{'Target Replication Server'}.Str                                    if $process{'Target Replication Server'};
+            $target-server              = '';   $target-server  = $process{'Target Replication Server'}.Str                                    if $process{'Target Replication Server'};
 
-            %!statistics{$node-name}{$fsid}{$type}.source-objs(:$source-objs);
-            %!statistics{$node-name}{$fsid}{$type}.target-objs(:$target-objs);
 
-            $total-source-objs         += $source-objs;
-            $total-source-objs-delta   += %!statistics{$node-name}{$fsid}{$type}.source-objs-delta;
 
-            $total-target-objs         += $target-objs;
-            $total-target-objs-delta   += %!statistics{$node-name}{$fsid}{$type}.target-objs-delta;
-
-            my $pending-objs            = %!statistics{$node-name}{$fsid}{$type}.pending-objs;
-            $total-pending-objs        += $pending-objs;
 
             $row                        = Array.new;
+
+
+
+
+
             $row.push:                  $node-name;
             $row.push:                  $type;
             $row.push:                  $filespace ?? $filespace ~ int-to-superscript($fsid.Int) !! ' ';
@@ -212,51 +289,12 @@ class Reporter does ISP::Server::Reporter {
     }
 }
 
-#"select NODE_NAME,START_TIME,FSNAME,FSID,PROC_ID,TOTFILES_TO_REPLICATE,TOTFILES_REPLICATED,TOTBYTES_TO_REPLICATE,TOTBYTES_REPLICATED,BKSERVER from REPLICATIONVIEW where NODE_NAME in (select NODE_NAME from NODES where NODEGROUP='DFS')"
-#            NODE_NAME: DFS2K16-14
-#           START_TIME: 2023-02-28 08:21:57.000000
-#               FSNAME: \\dfs2k16-14\c$\data\fs10
-#                 FSID: 2
-#              PROC_ID: 1180
-#TOTFILES_TO_REPLICATE: 3811271
-#  TOTFILES_REPLICATED: 3811271
-#TOTBYTES_TO_REPLICATE: 940329062584
-#  TOTBYTES_REPLICATED: 940329062584
-#             BKSERVER: ISPLC01
-#
-#            NODE_NAME: DFS2K16-17
-#           START_TIME: 2023-02-28 17:00:48.000000
-#               FSNAME: \\dfs2k16-17\g$
-#                 FSID: 4
-#              PROC_ID: 1188
-#TOTFILES_TO_REPLICATE: 154619
-#  TOTFILES_REPLICATED: 74492
-#TOTBYTES_TO_REPLICATE: 965132679688
-#  TOTBYTES_REPLICATED: 275247425006
-#             BKSERVER: ISPLC01
+my %storage-pools;
 
-#"select NODE_NAME,START_TIME,FSNAME,FSID,PROC_ID,TOTFILES_TO_REPLICATE,TOTFILES_REPLICATED,TOTBYTES_TO_REPLICATE,TOTBYTES_REPLICATED,BKSERVER from REPLICATIONVIEW where STATE='RUNNING'"
-#            NODE_NAME: DFS2K16-15
-#           START_TIME: 2023-02-28 12:23:31.000000
-#               FSNAME: \\dfs2k16-15\c$\data\fs15
-#                 FSID: 4
-#              PROC_ID: 1184
-#TOTFILES_TO_REPLICATE: 1064390
-#  TOTFILES_REPLICATED: 786166
-#TOTBYTES_TO_REPLICATE: 3860938584793
-#  TOTBYTES_REPLICATED: 1959312768620
-#             BKSERVER: ISPLC01
-#
-#            NODE_NAME: DFS2K16-15
-#           START_TIME: 2023-02-28 12:23:31.000000
-#               FSNAME: \\dfs2k16-15\c$\data\fs151
-#                 FSID: 5
-#              PROC_ID: 1184
-#TOTFILES_TO_REPLICATE: 1281422
-#  TOTFILES_REPLICATED: 1227044
-#TOTBYTES_TO_REPLICATE: 1692333539470
-#  TOTBYTES_REPLICATED: 1478381486808
-#             BKSERVER: ISPLC01
+class Storage-Pool-Consumption {
+    has Real    $.EST_CAPACITY_MB;
+    has Real    $.PCT_UTILIZED;
+}
 
 sub MAIN (
     Str:D   :$isp-server!,                          #= ISP server name
@@ -265,26 +303,24 @@ sub MAIN (
     Int:D   :$count                         = 1,    #= Number of refreshes (0 is infinity)
     Bool    :$grid,                                 #= Full table grid
     Bool    :$clear,                                #= Clear the screen with each iteration
-    Str     :$node,                                 #= ISP NODE name or NODEGROUP
 ) {
-    my @command         = ['QUERY', 'REPLNODE'];
-    if $node {
-        @command.push: $node;
+    my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin);
+    for $dsmadmc.execute(['SELECT', 'STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED', 'FROM', 'STGPOOLS']) -> $stgpool {
+        %storage-pools{$stgpool<STGPOOL_NAME>}  = Storage-Pool-Consumption.new(:EST_CAPACITY_MB($stgpool<EST_CAPACITY_MB>.Real), :PCT_UTILIZED($stgpool<PCT_UTILIZED>.Real));
     }
-    else {
-        @command.push: '*';
-    }
+
+    my @command         = ['SELECT', '*', 'FROM', 'PROCESSES', 'WHERE', "PROCESS='Protect Stgpool'"];
     my @fields;
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Node Name'),        :alignment('l'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Type'),             :alignment('l'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Filespace Name'),   :alignment('l'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source Objs'),      :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source Δ'),       :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Objs'),      :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Δ'),       :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Pending Objs'),     :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Completed'),        :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target Server'),    :alignment('l'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Storage Pool'), :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Elapsed'),      :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source'),       :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target'),       :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Phase'),        :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Processed'),    :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Transferred'),  :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Complete'),     :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Deletions'),    :alignment('r'));
+    @fields.push:   ISP::Server::Reporter::Field.new(:name('Failures'),     :alignment('r'));
     my $reporter    = Reporter.new(
                                     :$isp-server,
                                     :$isp-admin,
@@ -292,10 +328,10 @@ sub MAIN (
                                     :$grid,
                                     :$clear,
                                     :$interval,
-                                    :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Node Replication'),
+                                    :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Protect Storage Pool'),
                                     :@command,
                                     :@fields,
-                                    :sort-by('Node Name'),
+                                    :sort-by('Storage Pool'),
                                   );
     $reporter.loop;
 }
