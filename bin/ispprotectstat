@@ -1,272 +1,25 @@
 #!/usr/bin/env raku
 
-use ISP::Server::Reporter;
+#   select STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED,COMP_SPACE_SAVED_MB,DEDUP_SPACE_SAVED_MB,SPACE_SAVED_MB from STGPOOLS where STGPOOL_NAME like '%_DC'
+#   QUERY', 'EVENT', $domain, '*', 'BEGINDATE=TODAY-' ~ $days, BEGINTIME=??? 'ENDDATE=TODAY', ENDTIME=??? 'FORMAT=DETAILED
+#       - STATUS!='COMPLETED'
+#       - duration 50% longer than usual or > 4 hours more than usual
+#   Log usage
+#   dbspace
+#   ACTLOG errors
+#   AIX disk space
+
 use ISP::dsmadmc;
+use Data::Dump::Tree;
 
-constant \MINUTE    = 60;
-constant \HOUR      = MINUTE    * 60;
-constant \DAY       = HOUR      * 24;
-
-constant \KILO  = 1024;         # bytes
-constant \MEGA  = KILO  * KILO;
-constant \GIGA  = MEGA  * KILO;
-constant \TERA  = GIGA  * KILO;
-constant \PETA  = TERA  * KILO;
-
-my @SUB-DIGITS;
-@SUB-DIGITS[0]    = "\x[2080]";
-@SUB-DIGITS[1]    = "\x[2081]";
-@SUB-DIGITS[2]    = "\x[2082]";
-@SUB-DIGITS[3]    = "\x[2083]";
-@SUB-DIGITS[4]    = "\x[2084]";
-@SUB-DIGITS[5]    = "\x[2085]";
-@SUB-DIGITS[6]    = "\x[2086]";
-@SUB-DIGITS[7]    = "\x[2087]";
-@SUB-DIGITS[8]    = "\x[2088]";
-@SUB-DIGITS[9]    = "\x[2089]";
-
-my @SUPER-DIGITS;
-@SUPER-DIGITS[0]    = "\x[2070]";
-@SUPER-DIGITS[1]    = "\x[00B9]";
-@SUPER-DIGITS[2]    = "\x[00B2]";
-@SUPER-DIGITS[3]    = "\x[00B3]";
-@SUPER-DIGITS[4]    = "\x[2074]";
-@SUPER-DIGITS[5]    = "\x[2075]";
-@SUPER-DIGITS[6]    = "\x[2076]";
-@SUPER-DIGITS[7]    = "\x[2077]";
-@SUPER-DIGITS[8]    = "\x[2078]";
-@SUPER-DIGITS[9]    = "\x[2079]";
-
-sub int-to-superscript (Int:D $i) {
-    my $accumulator = '';
-    for $i.Int.comb -> $c {
-        $accumulator ~= @SUPER-DIGITS[$c.Int];
-    }
-    return $accumulator;
-}
-
-sub int-to-subscript (Int:D $i) {
-    my $accumulator = '';
-    for $i.Int.comb -> $c {
-        $accumulator ~= @SUB-DIGITS[$c.Int];
-    }
-    return $accumulator;
-}
-
-sub num-with-comma (Int:D $i is copy) {
-    return $i.Str.flip.comb(3).join(',').flip if $i >= 0;
-    $i *= -1;
-    return '-' ~ $i.Str.flip.comb(3).join(',').flip;
-}
-
-sub num-to-metric (Int:D $num) {
-    given $num {
-        when $_ >= PETA { return ($num / PETA).fmt("%.1f P"); }
-        when $_ >= TERA { return ($num / TERA).fmt("%.1f T"); }
-        when $_ >= GIGA { return ($num / GIGA).fmt("%.1f G"); }
-        when $_ >= MEGA { return ($num / MEGA).fmt("%.1f M"); }
-        when $_ >= KILO { return ($num / KILO).fmt("%.1f K"); }
-        default         { return $num                         }
-    }
-}
-
-sub to-bytes (Str:D $num-unit) {
-    if $num-unit ~~ / ^ (\d+ '.'* \d*) \s* (\w*) $ / {
-        my $actual  = $0.Str.comb.grep(/ \d | '.' /).join;
-        my $unit    = $1.Str with $1;
-        given $unit {
-            when 'K'    { return $actual * KILO }
-            when 'M'    { return $actual * MEGA }
-            when 'G'    { return $actual * GIGA }
-            when 'T'    { return $actual * TERA }
-            when 'P'    { return $actual * PETA }
-            default     { return $actual;       }
-        }
-    }
-    return $num-unit;
-}
-
-sub seconds-to-d-hh-mm-ss (Int:D $total-seconds) {
-    my $dhms        = 'hh:mm:ss';
-    my $days        = 0;
-    my $hours       = 0;
-    my $minutes     = 0;
-    my $seconds     = $total-seconds;
-    my $result;
-    if $seconds >= DAY {
-        $days       = ($seconds / DAY).Int;
-        $result     = $days ~ 'd ';
-        $seconds   -= $days * DAY;
-    }
-    if $seconds >= HOUR {
-        $hours      = ($seconds / HOUR).Int;
-        $result    ~= $hours.fmt("%02d");
-        $seconds   -= $hours * HOUR;
-    }
-    else {
-        $result    ~= '00';
-    }
-    if $seconds >= MINUTE {
-        $minutes    = ($seconds / MINUTE).Int;
-        $result    ~= ':' ~ $minutes.fmt("%02d") ~ ':';
-        $seconds   -= $minutes * MINUTE;
-    }
-    else {
-        $result    ~= ':00:';
-    }
-    $seconds        = 0 if $seconds < 0;
-    $result        ~= $seconds.fmt("%02d");
-    return $result;
-}
-
-my regex date-time-regex    {
-                                ^
-                                $<month>        = (\d\d)
-                                '/'
-                                $<day-of-month> = (\d\d)
-                                '/'
-                                $<year>         = (\d+)
-                                \s+
-                                $<hour>         = (\d\d)
-                                ':'
-                                $<minute>       = (\d\d)
-                                ':'
-                                $<second>       = (\d\d)
-                                $
-                            }
-
-#"select * from processes"
-#     PROCESS_NUM: 1243
-#         PROCESS: Protect Stgpool
-#      START_TIME: 2023-03-03 07:55:16.000000
-# FILES_PROCESSED: 142343755
-# BYTES_PROCESSED: 1070827771688
-#BYTES_TO_PROCESS: 1261994882181
-#           JOBID: 
-#          STATUS: Protecting storage pool EVAULT_DC on server ISPLC02 to EVAULT_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 142343755 of 146455717. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 997 GB of 1,175 GB. Amount failed: 0 bytes. Amount 
-#                   transferred: 997 GB. Elapsed time: 0 Days, 4 Hours, 25 Minutes.\
-#  PROCESS_PARENT: 
-#
-#     PROCESS_NUM: 1244
-#         PROCESS: Protect Stgpool
-#      START_TIME: 2023-03-03 08:27:44.000000
-# FILES_PROCESSED: 98470748
-# BYTES_PROCESSED: 2020500870472
-#BYTES_TO_PROCESS: 2523199142121
-#           JOBID: 
-#          STATUS: Protecting storage pool NFS_DC on server ISPLC02 to NFS_DC on server ISPLC01. Protect process phase: PROTECTING. Extents protected: 98470748 of 102529096. Extents failed to protect: 0. Extents deleted: 0 of 0. Amount protected: 1,881 GB of 2,349 GB. Amount failed: 0 bytes. Amount transferred: 
-#                   1,886 GB. Elapsed time: 0 Days, 3 Hours, 52 Minutes.\
-#  PROCESS_PARENT: 
-
-my regex status-regex    {
-                                ^
-                                'Protecting storage pool '
-                                $<source-stgpool-name>      = (.+?)
-                                ' on server '
-                                $<source-server>            = (.+?)
-                                ' to '
-                                $<target-stgpool-name>      = (.+?)
-                                ' on server '
-                                $<target-server>            = (.+?)
-                                '. Protect process phase: '
-                                $<phase>                    = (.+?)
-                                '. Extents protected: '
-                                \d+
-                                ' of '
-                                \d+
-                                '. Extents failed to protect: '
-                                \d+
-                                '. Extents deleted: '
-                                \d+
-                                ' of '
-                                \d+
-                                '. Amount protected: '
-                                .+?
-                                ' of '
-                                .+?
-                                '. Amount failed: '
-                                .+?
-                                '. Amount transferred: '
-                                $<amount-transferred>       = (.+?)
-                                '. Elapsed time: '
-                         }
-
-#   Source          Target          Phase       Elapsed Time            Processed       Transferred     Completed   #%%%   Deleted Failed
-#   EVAULT@ISPLC02  EVAULT@ISPLC01  PROTECTING  [hh:mm:ss]**<procid>    1,987 G         1,800 G         54%         #%%%   0       0
-
-class Reporter does ISP::Server::Reporter {
-
-    method process-rows (@processes) {
-        my Int      $PROCESS_NUM;                           #     PROCESS_NUM: 1244
-        my Str      $PROCESS;                               #         PROCESS: Protect Stgpool
-        my DateTime $START_TIME;                            #      START_TIME: 2023-03-03 08:27:44.000000
-        my Int      $BYTES_PROCESSED;                       # BYTES_PROCESSED: 2020500870472
-        my Str      $storage-pool;                          # regex
-        my Str      $source;                                # regex
-        my Str      $target;                                # regex
-        my Str      $phase;                                 # regex
-        my Str      $elapsed-time;                          # regex
-        my Int      $transferred;                           # regex
-
-        my $row;
-        for @processes -> $process {
-            next                        unless $process{'PROCESS'}:exists;
-            $PROCESS                    = '';   $PROCESS            = $process{'PROCESS'}.Str;          if $process{'PROCESS'};
-            next                        unless  $PROCESS eq 'Protect Stgpool';
-            $PROCESS_NUM                = 0;    $PROCESS_NUM        = $process{'PROCESS_NUM'}.Str       if $process{'PROCESS_NUM'};
-            $START_TIME                 = Nil;
-            $elapsed-time               = '';
-            if $process{'START_TIME'} && $process{'START_TIME'} ~~ /<date-time-regex>/ {
-                $START_TIME     = DateTime.new(
-                                                    :month($<date-time-regex><month>),
-                                                    :day($<date-time-regex><day-of-month>),
-                                                    :year($<date-time-regex><year> < 100 ?? +$<date-time-regex><year> + 2000 !! +$<date-time-regex><year>),
-                                                    :hour($<date-time-regex><hour>),
-                                                    :minute($<date-time-regex><minute>),
-                                                    :second($<date-time-regex><second>),
-                                                );
-                $elapsed-time   = seconds-to-d-hh-mm-ss((DateTime.new(now, :timezone(self.seconds-offset-UTC)).local - $START_TIME).Int);
-            }
-            $BYTES_PROCESSED            = 0;    $BYTES_PROCESSED    = $process{'PROCESS_NUM'}.Int       if $process{'PROCESS_NUM'};
-            if  $process{'STATUS'} ~~ /<status-regex>/ {
-                $source                 = $<status-regex><source-stgpool-name> ~ '@' ~ $<status-regex><source-server>;
-                $target                 = $<status-regex><target-stgpool-name> ~ '@' ~ $<status-regex><target-server>;
-                $phase                  = $<status-regex><phase>;
-                $transferred            = $<status-regex><amount-transferred>;
-            }
-            else {
-                die 'Parse of STATUS failed!';
-            }
-            $row                        = Array.new;
-            $row.push:                  $node-name;
-            $row.push:                  $type;
-            $row.push:                  $filespace ?? $filespace ~ int-to-superscript($fsid.Int) !! ' ';
-            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.source-objs);
-            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.source-objs-delta);
-            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.target-objs);
-            $row.push:                  num-with-comma(%!statistics{$node-name}{$fsid}{$type}.target-objs-delta);
-            $row.push:                  num-with-comma($pending-objs);
-            
-            my Rat $pct-complete        = 100.0;
-            if $source-objs > 0 {
-                $pct-complete           = ($target-objs / $source-objs) * 100;
-                $pct-complete           = 99.9 if 99.9 < $pct-complete < 100.0;
-            }
-            $row.push:                  $pct-complete.fmt("%.1f%%");
-            $row.push:                  $target-server;
-            self.table.add-row:         $row;
-        }
-
-#       my Rat $pct-complete            = ($total-target-objs / $total-source-objs) * 100;
-#       if 99.9 < $pct-complete < 100.0 {
-#           $pct-complete               = 99.9;
-#       }
-#       $row.push:                      $pct-complete.fmt("%.1f%%");
-    }
+my %dbspaces;
+class DBSPACE {
+    has Int     $.TOTAL_FS_SIZE_MB;
+    has Int     $.USED_FS_SIZE_MB;
+    has Int     $.FREE_SPACE_MB;
 }
 
 my %storage-pools;
-
 class Storage-Pool-Consumption {
     has Real    $.EST_CAPACITY_MB;
     has Real    $.PCT_UTILIZED;
@@ -275,42 +28,19 @@ class Storage-Pool-Consumption {
 sub MAIN (
     Str:D   :$isp-server!,                          #= ISP server name
     Str:D   :$isp-admin!,                           #= ISP server name
-    Int:D   :$interval      where * >= 5    = 58,   #= Refresh every --interval seconds (minimum 10s)
-    Int:D   :$count                         = 1,    #= Number of refreshes (0 is infinity)
-    Bool    :$grid,                                 #= Full table grid
-    Bool    :$clear,                                #= Clear the screen with each iteration
 ) {
     my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin);
     for $dsmadmc.execute(['SELECT', 'STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED', 'FROM', 'STGPOOLS']) -> $stgpool {
         %storage-pools{$stgpool<STGPOOL_NAME>}  = Storage-Pool-Consumption.new(:EST_CAPACITY_MB($stgpool<EST_CAPACITY_MB>.Real), :PCT_UTILIZED($stgpool<PCT_UTILIZED>.Real));
     }
-
-    my @command         = ['SELECT', '*', 'FROM', 'PROCESSES', 'WHERE', "PROCESS='Protect Stgpool'"];
-
-#   Source          Target          Phase       Elapsed Time            Processed       Transferred     Completed   #%%%   Deleted Failed
-#   EVAULT@ISPLC02  EVAULT@ISPLC01  PROTECTING  [hh:mm:ss]**<procid>    1,987 G         1,800 G         54%         #%%%   0       0
-
-    my @fields;
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Source'),       :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Target'),       :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Phase'),        :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Elapsed Time'), :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Processed'),    :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Transferred'),  :alignment('r'));
-    @fields.push:   ISP::Server::Reporter::Field.new(:name('Completed'),    :alignment('r'));
-    my $reporter    = Reporter.new(
-                                    :$isp-server,
-                                    :$isp-admin,
-                                    :$count,
-                                    :$grid,
-                                    :$clear,
-                                    :$interval,
-                                    :title('IBM Spectrum Protect: ' ~ $isp-server ~ ' Protect Storage Pool'),
-                                    :@command,
-                                    :@fields,
-                                    :sort-by('Source'),
-                                  );
-    $reporter.loop;
+ddt %storage-pools;
+    for $dsmadmc.execute(['SELECT', 'LOCATION,TOTAL_FS_SIZE_MB,USED_FS_SIZE_MB,FREE_SPACE_MB', 'FROM', 'DBSPACE']) -> $dbspace {
+        %dbspaces{$dbspace<LOCATION>} = DBSPACE.new(:TOTAL_FS_SIZE_MB($dbspace<TOTAL_FS_SIZE_MB>.Int), :USED_FS_SIZE_MB($dbspace<USED_FS_SIZE_MB>.Int), :FREE_SPACE_MB($dbspace<FREE_SPACE_MB>.Int));
+    }
+ddt %dbspaces;
 }
 
 =finish
+
+SELECT TO_CHAR(CHAR(scheduled_start),'YYYY-MM-DD HH24:MI:SS') as SCHEDULED_START,TRANSLATE('a bc:de:fg', DIGITS(completed - actual_start), '_______abcdefgh_____',' ') as "ELAPTIME (D HHMMSS)",schedule_name, status, reason FROM events WHERE node_name IS NULL and scheduled_start> '2023-08-22 00:00:00'
+
