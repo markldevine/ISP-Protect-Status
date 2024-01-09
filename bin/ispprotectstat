@@ -19,6 +19,30 @@ class DBSPACE {
     has Int     $.FREE_SPACE_MB;
 }
 
+my %logs;
+class LOG {
+    has Str $.ACTIVE_LOG_DIR;
+    has Rat $.TOTAL_SPACE_MB;       # 333661.00
+    has Rat $.USED_SPACE_MB;
+    has Rat $.FREE_SPACE_MB;
+    has Rat $.ACTIVELOG_TOL_FS_MB;
+    has Rat $.ACTIVELOG_USED_FS_MB;
+    has Rat $.ACTIVELOG_FREE_FS_MB;
+    has Str $.ARCH_LOG_DIR;
+    has Rat $.ARCHLOG_TOL_FS_MB;
+    has Rat $.ARCHLOG_USED_FS_MB;
+    has Rat $.ARCHLOG_FREE_FS_MB;
+    has Rat $.ARCH_LOG_COMPRESSED;
+    has Str $.MIRROR_LOG_DIR; 
+    has Rat $.MIRLOG_TOL_FS_MB; 
+    has Rat $.MIRLOG_USED_FS_MB; 
+    has Rat $.MIRLOG_FREE_FS_MB: 
+    has Str $.AFAILOVER_LOG_DIR;
+    has Rat $.AFAILOVER_TOL_FS_MB;
+    has Rat $.AFAILOVER_USED_FS_MB;
+    has Rat $.AFAILOVER_FREE_FS_MB;
+}
+
 my %storage-pools;
 class Storage-Pool-Consumption {
     has Real    $.EST_CAPACITY_MB;
@@ -28,8 +52,9 @@ class Storage-Pool-Consumption {
 sub MAIN (
     Str:D   :$isp-server!,                          #= ISP server name
     Str:D   :$isp-admin!,                           #= ISP server name
+    Bool    :$cache,                                #= Read from cache
 ) {
-    my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin);
+    my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin, :$cache);
     for $dsmadmc.execute(['SELECT', 'STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED', 'FROM', 'STGPOOLS']) -> $stgpool {
         %storage-pools{$stgpool<STGPOOL_NAME>}  = Storage-Pool-Consumption.new(:EST_CAPACITY_MB($stgpool<EST_CAPACITY_MB>.Real), :PCT_UTILIZED($stgpool<PCT_UTILIZED>.Real));
     }
