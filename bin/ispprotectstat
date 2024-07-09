@@ -10,7 +10,7 @@
 #   AIX disk space
 
 use ISP::dsmadmc;
-use Data::Dump::Tree;
+use Our::Grid;
 
 my %dbspaces;
 class DBSPACE {
@@ -43,29 +43,40 @@ class LOG {
     has Rat $.AFAILOVER_FREE_FS_MB;
 }
 
-my %storage-pools;
-class Storage-Pool-Consumption {
-    has Real    $.EST_CAPACITY_MB;
-    has Real    $.PCT_UTILIZED;
-}
-
 sub MAIN (
-    Str:D   :$isp-server!,                          #= ISP server name
-    Str:D   :$isp-admin!,                           #= ISP server name
-    Bool    :$cache,                                #= Read from cache
+    Str:D   :$isp-server    = 'ISPLC01',        #= ISP server
+    Str:D   :$isp-admin     = 'A028441',        #= ISP administrator
 ) {
-    my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin, :$cache);
-    for $dsmadmc.execute(['SELECT', 'STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED', 'FROM', 'STGPOOLS']) -> $stgpool {
-        %storage-pools{$stgpool<STGPOOL_NAME>}  = Storage-Pool-Consumption.new(:EST_CAPACITY_MB($stgpool<EST_CAPACITY_MB>.Real), :PCT_UTILIZED($stgpool<PCT_UTILIZED>.Real));
+    my Our::Grid $grid;
+    my $dsmadmc     = ISP::dsmadmc.new(:$isp-server, :$isp-admin, :cache);
+    $grid          .= new;
+    $grid.title('ISP STGPOOL Usage');
+    $grid.add-heading: 'STGPOOL',                                                                               :bold,  :justification<center>;
+    $grid.add-heading: 'TBs',                                                                                   :bold,  :justification<center>;
+    $grid.add-heading: 'Utilized',                                                                              :bold,  :justification<center>;
+    for $dsmadmc.execute(['SELECT', 'STGPOOL_NAME,EST_CAPACITY_MB,PCT_UTILIZED', 'FROM', 'STGPOOLS'], :expire-after(DateTime.new(now + (24 * 60 * 60)))) -> $stgpool {
+        next        unless $stgpool<EST_CAPACITY_MB>.Real;
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($stgpool<STGPOOL_NAME>),                                         :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :0col);
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(($stgpool<EST_CAPACITY_MB>.Real / 1024 / 1024).fmt("%.1f").Str), :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :1col);
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($stgpool<PCT_UTILIZED>.Real),                                    :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :2col);
+        $grid.current-row++;
     }
-ddt %storage-pools;
-    for $dsmadmc.execute(['SELECT', 'LOCATION,TOTAL_FS_SIZE_MB,USED_FS_SIZE_MB,FREE_SPACE_MB', 'FROM', 'DBSPACE']) -> $dbspace {
+    $grid.ANSI-print;
+    $grid          .= new;
+    $grid.title('ISP STGPOOL Usage');
+    $grid.add-heading: 'Location',                                                                              :bold,  :justification<center>;
+    $grid.add-heading: 'Total GBs',                                                                             :bold,  :justification<center>;
+    $grid.add-heading: 'Used GBs',                                                                              :bold,  :justification<center>;
+    $grid.add-heading: 'Free GBs',                                                                              :bold,  :justification<center>;
+    for $dsmadmc.execute(['SELECT', 'LOCATION,TOTAL_FS_SIZE_MB,USED_FS_SIZE_MB,FREE_SPACE_MB', 'FROM', 'DBSPACE'], :expire-after(DateTime.new(now + (24 * 60 * 60)))) -> $dbspace {
         %dbspaces{$dbspace<LOCATION>} = DBSPACE.new(:TOTAL_FS_SIZE_MB($dbspace<TOTAL_FS_SIZE_MB>.Int), :USED_FS_SIZE_MB($dbspace<USED_FS_SIZE_MB>.Int), :FREE_SPACE_MB($dbspace<FREE_SPACE_MB>.Int));
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text($dbspace<LOCATION>),                                             :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :0col);
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(($dbspace<TOTAL_FS_SIZE_MB>.Int / 1024).fmt("%.1f")),            :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :1col);
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(($dbspace<USED_FS_SIZE_MB>.Int / 1024).fmt("%.1f")),             :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :2col);
+        $grid.add-cell(:cell(Our::Grid::Cell.new(:text(($dbspace<FREE_SPACE_MB>.Int / 1024).fmt("%.1f")),               :justification<right>,  :foreground<white>, :highlight(15, 79, 52), :background(15, 79, 52))),  :3col);
+        $grid.current-row++;
     }
-ddt %dbspaces;
+    $grid.ANSI-print;
 }
 
 =finish
-
-SELECT TO_CHAR(CHAR(scheduled_start),'YYYY-MM-DD HH24:MI:SS') as SCHEDULED_START,TRANSLATE('a bc:de:fg', DIGITS(completed - actual_start), '_______abcdefgh_____',' ') as "ELAPTIME (D HHMMSS)",schedule_name, status, reason FROM events WHERE node_name IS NULL and scheduled_start> '2023-08-22 00:00:00'
-
